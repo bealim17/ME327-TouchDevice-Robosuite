@@ -9,6 +9,9 @@ from robosuite.utils.observables import Observable, sensor
 import robosuite.utils.transform_utils as T
 
 
+RAND_START = True
+
+
 class StaticRoundNutObject(MujocoXMLObject):
     def __init__(self, name):
         super().__init__(
@@ -187,6 +190,20 @@ class RoundNutOnlyEnv(ManipulationEnv):
 
     def _reset_internal(self):
         super()._reset_internal()
+
+        if RAND_START:
+            # Random position in a semicircle around the round nut
+            radius     = 0.15                        # distance from nut (m) — tune this
+            angle      = np.random.uniform(-np.pi/2, np.pi/2) # semicircle (front half of table)
+            offset_x   = radius * np.cos(angle)
+            offset_y   = radius * np.sin(angle)
+
+            self.cylinder_start_pos = np.array([
+                self.round_nut_start_pos[0] + offset_x,
+                self.round_nut_start_pos[1] + offset_y,
+                self.table_offset[2] + 0.02,
+            ])
+
         self.sim.data.qpos[self.cylinder_qpos_adr:self.cylinder_qpos_adr + 3] = self.cylinder_start_pos
         self.sim.data.qpos[self.cylinder_qpos_adr + 3:self.cylinder_qpos_adr + 7] = np.array([1.0, 0.0, 0.0, 0.0])
         self.sim.data.qvel[self.cylinder_dof_adr:self.cylinder_dof_adr + 6] = 0

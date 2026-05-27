@@ -64,7 +64,7 @@ TOUCH_CENTER = np.array([
 # Robot workspace — center and half-range (m)
 # Auto-updated at startup to match actual reset position
 ROBOT_CENTER     = np.array([-0.087,  0.001,  1.022])  # from axis test reset pos
-ROBOT_HALF_RANGE = np.array([ 0.50,   0.50,   0.50 ]) # position scaling
+ROBOT_HALF_RANGE = np.array([ 0.45,   0.45,   0.4 ]) # position scaling
 
 # Relative mode
 RELATIVE_SPEED = 0.002     # m per mm displacement per step — feels responsive
@@ -74,22 +74,22 @@ MAX_DISP_MM    = 80.0      # clamp displacement per axis (mm)
 # Action
 # BASIC controller OSC_POSE: output_max=0.05m/step, input scaled [-1,1]
 # So action=1.0 → 0.05m movement per step at SIM_HZ=20 → 1m/s max
-ACTION_GAIN = 3.0          # gentle — controller has ramp_ratio=0.2 built in
+ACTION_GAIN = 5.0          # gentle — controller has ramp_ratio=0.2 built in
 
 # Force feedback
 FORCE_FEEDBACK_ENABLED = True   # True = render haptic forces, False = disable force feedback
 FORCE_MODE    = "mj_contact"  # "mj_contact":mujoco contact forces / "penetration": for contact forces rendered via OpenHaptics
-FORCE_BODY    = "auto"        # "gripper": always gripper forces
+FORCE_BODY    = "gripper"        # "gripper": always gripper forces
                                # "object": always object forces
                                # "auto": gripper when open, object when closed
 
 # General Tuning parameters for Force Feedback
 MAX_FORCE_N   = 1.5        # Touch device force clip (N)
-FORCE_ALPHA   = 0.8        # more smoothing for forces (0.0 = no smoothing, 1.0 = full smoothing)
+FORCE_ALPHA   = 1.0        # force low-pass filter (1.0 = no smoothing, 0.0 = maximum smoothing)
 
 # Tuning parameters for mj_contact Force Feedback — adjust for desired feel - FORCE_MODE = "mj_contact" / default
 FORCE_SCALE   = 0.01      # scale raw MuJoCo forces for Touch device (tune for desired feel)
-FORCE_DAMP    = 1.0         # damping — only applied when in contact
+FORCE_DAMP    = 0.0         # damping — only applied when in contact
 
 # Tuning parameters for penetration Force Feedback mode (OpenHaptics spring-damper) - FORCE_MODE = "penetration"
 STIFFNESS     = 150.0      # N/m — start low, increase if surface feels too soft
@@ -104,7 +104,7 @@ FINGER_GEOMS = {
     'gripper0_right_hand_collision',
 }
 
-SIM_HZ = 20
+SIM_HZ = 50
 
 
 # ─────────────────────────────────────────────────────────────
@@ -267,15 +267,20 @@ _filtered_force = np.zeros(3)
 # OBJECT_BODY_NAME — auto-detected at startup, set manually to None initially:
 OBJECT_BODY_NAME = None   # None = auto-detect at startup
 
-
-def _remap_to_touch(world_force: np.ndarray) -> np.ndarray:
-    """Remap MuJoCo world frame → Touch device frame (inverse of position mapping)."""
+def _remap_to_touch(world_force):
     fx, fy, fz = world_force
-    return np.array([
-         fx,   # MuJoCo X → Touch X
-         fz,   # MuJoCo Z → Touch Y
-        -fy,   # MuJoCo Y → Touch -Z
-    ])
+    return np.array([fy, fz, fx])
+    # Touch X = World Y 
+    # Touch Y = World Z 
+    # Touch Z = World X 
+# def _remap_to_touch(world_force: np.ndarray) -> np.ndarray:
+#     """Remap MuJoCo world frame → Touch device frame (inverse of position mapping)."""
+#     fx, fy, fz = world_force
+#     return np.array([
+#          fx,   # MuJoCo X → Touch X
+#          fz,   # MuJoCo Z → Touch Y
+#         -fy,   # MuJoCo Y → Touch -Z
+#     ])
 
 
 def get_contact_force_mj(env) -> np.ndarray:

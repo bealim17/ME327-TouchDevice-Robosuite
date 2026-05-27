@@ -46,15 +46,13 @@ py -3.13 -m venv .venv
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Apply modified robosuite asset files (gripper + nut geometry)
+# 4. Upgrade numpy to 2.x (robosuite's mink sub-dependency declares numpy<2.0,
+#    so install the rest first, then force-upgrade)
+pip install numpy==2.4.6
+
+# 5. Apply modified robosuite asset files (gripper + nut geometry)
 python apply_patches.py
 ```
-
-> `imageio[ffmpeg]` pulls in the FFmpeg backend for MP4 recording. If pip can't find `imageio[ffmpeg]` as a single token, install it separately:
-> ```bash
-> pip install imageio
-> pip install imageio[ffmpeg]
-> ```
 
 ---
 

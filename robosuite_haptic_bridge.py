@@ -21,9 +21,11 @@ Confirmed axis mappings from haptic_calibration_demo.py:
   Forces:   low-pass filtered at FORCE_ALPHA
 
 Controls:
-  Move Touch stylus         → move robot end effector
-  Touch device Button 1     → toggle gripper open/close
-  Ctrl+C                    → quit
+  Move Touch stylus         : move robot end effector
+  Touch device Button 1     : toggle gripper open/close (bottom button)
+  Z key                     : toggle force feedback on/off
+  SPACEBAR                  : reset simulation
+  Ctrl+C                    : quit
 """
 
 import threading
@@ -38,6 +40,8 @@ from robosuite.controllers import load_composite_controller_config
 import pyOpenHaptics.hd as hd
 from pyOpenHaptics.hd_callback import hd_callback
 from pyOpenHaptics.hd_device import HapticDevice
+
+from pynput import keyboard
 
 
 # ─────────────────────────────────────────────────────────────
@@ -73,9 +77,9 @@ MAX_DISP_MM    = 80.0      # clamp displacement per axis (mm)
 ACTION_GAIN = 3.0          # gentle — controller has ramp_ratio=0.2 built in
 
 # Force feedback
-FORCE_FEEDBACK_ENABLED = False   # True = render haptic forces, False = disable force feedback
+FORCE_FEEDBACK_ENABLED = True   # True = render haptic forces, False = disable force feedback
 FORCE_MODE    = "mj_contact"  # "mj_contact":mujoco contact forces / "penetration": for contact forces rendered via OpenHaptics
-FORCE_BODY    = "gripper"        # "gripper": always gripper forces
+FORCE_BODY    = "auto"        # "gripper": always gripper forces
                                # "object": always object forces
                                # "auto": gripper when open, object when closed
 
@@ -85,7 +89,7 @@ FORCE_ALPHA   = 0.8        # more smoothing for forces (0.0 = no smoothing, 1.0 
 
 # Tuning parameters for mj_contact Force Feedback — adjust for desired feel - FORCE_MODE = "mj_contact" / default
 FORCE_SCALE   = 0.01      # scale raw MuJoCo forces for Touch device (tune for desired feel)
-FORCE_DAMP    = 0.0         # damping — only applied when in contact
+FORCE_DAMP    = 1.0         # damping — only applied when in contact
 
 # Tuning parameters for penetration Force Feedback mode (OpenHaptics spring-damper) - FORCE_MODE = "penetration"
 STIFFNESS     = 150.0      # N/m — start low, increase if surface feels too soft
@@ -116,9 +120,30 @@ class SharedState:
     gripper_closed:  bool = False
     last_button1:    bool = False
     running:         bool = True
+    reset_requested: bool = False
+    force_feedback_enabled: bool = FORCE_FEEDBACK_ENABLED
 
 shared = SharedState()
 lock   = threading.Lock()
+
+# ─────────────────────────────────────────────────────────────
+# KEYBOARD CALLBACK
+# ─────────────────────────────────────────────────────────────
+
+def on_key_press(key):
+    try:
+        if key == keyboard.Key.space:
+            with lock:
+                shared.reset_requested = True
+            print("  [SPACEBAR] Reset requested")
+        elif hasattr(key, 'char') and key.char == 'z':
+            with lock:
+                shared.force_feedback_enabled = not shared.force_feedback_enabled
+                new_state = shared.force_feedback_enabled
+            print(f"  [Z] Force feedback set to {new_state}")
+    except AttributeError:
+        pass
+
 
 # ─────────────────────────────────────────────────────────────
 # HAPTIC CALLBACK — 1kHz
@@ -154,7 +179,7 @@ def haptic_callback():
         shared.stylus_pos_mm[:]   = pos
         shared.stylus_vel_mm_s[:] = vel
         shared.button1_pressed    = button1
-        force_cmd = shared.contact_force_N.copy() if FORCE_FEEDBACK_ENABLED else np.zeros(3)
+        force_cmd = shared.contact_force_N.copy() if shared.force_feedback_enabled else np.zeros(3)
 
     # Velocity damping — only applied when in contact, not in free space
     in_contact  = np.linalg.norm(force_cmd) > 1e-4
@@ -316,7 +341,7 @@ def get_contact_force_mj(env) -> np.ndarray:
 def get_contact_force_penetration(env) -> np.ndarray:
     """
     Penetration mode: spring-damper from contact.dist on object contacts.
-    Uses EEF velocity from sim (m/s, world frame) for damping — more accurate
+    Uses EEF velocity from sim (m/s, world frame) for damping, more accurate
     than stylus velocity which is in a different space and lags behind sim motion.
     """
     global _filtered_force
@@ -545,7 +570,13 @@ if __name__ == "__main__":
     print(f"\nControls:")
     print(f"  Move stylus  → robot end effector  [{MAPPING_MODE} mode]")
     print(f"  Button 1     → toggle gripper")
+    print(f"  A           → toggle force feedback")
+    print(f"  SPACEBAR     → reset simulation")
     print(f"  Ctrl+C       → quit\n")
+
+    # ── Start keyboard listener ──
+    listener = keyboard.Listener(on_press=on_key_press)
+    listener.start()
 
     sim_step = 0
     with lock:
@@ -553,6 +584,26 @@ if __name__ == "__main__":
 
     try:
         while shared.running:
+            # ── Handle reset request ──
+            if shared.reset_requested:
+                with lock:
+                    shared.reset_requested = False
+                print("\n  Resetting simulation...")
+                obs = env.reset()
+                env.robots[0].init_qpos = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
+                obs = env.reset()
+                for _ in range(50):
+                    action = np.zeros(env.action_dim)
+                    action[-1] = 1.0
+                    obs, _, _, _ = env.step(action)
+                eef_start = obs['robot0_eef_pos'].copy()
+                ROBOT_CENTER[:] = eef_start
+                with lock:
+                    stylus_home = shared.stylus_pos_mm.copy()
+                    shared.gripper_closed = False
+                print(f"  Simulation reset. EEF at {eef_start.round(3)} m\n")
+                continue
+
             t0 = time.perf_counter()
 
             # ── Read shared state ──
@@ -589,9 +640,10 @@ if __name__ == "__main__":
 
             # ── Extract and send contact forces ──
             try:
-                if FORCE_FEEDBACK_ENABLED:
-                    with lock:
-                        stylus_vel = shared.stylus_vel_mm_s.copy()
+                with lock:
+                    force_enabled = shared.force_feedback_enabled
+                    stylus_vel = shared.stylus_vel_mm_s.copy()
+                if force_enabled:
                     force = get_contact_force(env, stylus_vel, gripper_closed)
                     if FORCE_MODE == "mj_contact":
                         scaled_force = np.clip(force * FORCE_SCALE, -MAX_FORCE_N, MAX_FORCE_N)
@@ -681,6 +733,7 @@ if __name__ == "__main__":
         print("\nShutting down...")
 
     finally:
+        listener.stop()
         shared.running = False
         with lock:
             shared.contact_force_N[:] = np.zeros(3)

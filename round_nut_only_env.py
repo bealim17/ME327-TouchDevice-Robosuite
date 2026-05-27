@@ -46,9 +46,9 @@ class RoundNutOnlyEnv(ManipulationEnv):
         gripper_types="default",
         base_types="default",
         initialization_noise="default",
-        table_full_size=(0.8, 0.8, 0.05),
+        table_full_size=(0.8, 0.8, 0.07), #0.05
         table_friction=(2.0, 0.02, 0.001),
-        table_offset=(0, 0, 0.82),
+        table_offset=(0, 0, 0.9), #0.82
         use_camera_obs=True,
         use_object_obs=True,
         reward_scale=1.0,
@@ -85,7 +85,7 @@ class RoundNutOnlyEnv(ManipulationEnv):
         self.cylinder = CylinderObject(
             name="InsertCylinder",
             size=(0.0275, 0.0325),
-            friction=(3.6, 0.3, 0.01), # sliding, torsional, rolling
+            friction=(3.4, 0.3, 0.01), # sliding, torsional, rolling
             # rgba=[0.2, 0.7, 1.0, 1.0], # rich blue color to visually distinguish the cylinder from the round nut
             rgba=[0.75, 0.75, 0.75, 1.0], # light grey color to match the round nut, so that it is harder to visually distinguish the two objects and you rely on haptics more
         )

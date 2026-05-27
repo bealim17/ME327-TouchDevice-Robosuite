@@ -1,0 +1,15 @@
+# Core simulation
+mujoco==3.8.1
+robosuite==1.5.2
+
+# Haptic device (requires OpenHaptics SDK installed separately — see README)
+pyOpenHaptics==1.0.1
+
+# Input / output
+pynput==1.8.2
+imageio==2.37.3
+imageio[ffmpeg]        # MP4 video recording
+
+# Numerics / vision (many pulled in transitively by robosuite, pinned for reproducibility)
+numpy==2.4.6
+opencv-python==4.11.0.86

@@ -24,7 +24,6 @@ Controls:
   Move Touch stylus         : move robot end effector
   Touch device Button 1     : toggle gripper open/close (bottom button)
   Z key                     : toggle force feedback on/off
-  V key                     : toggle video recording on/off
   SPACEBAR                  : reset simulation
   Ctrl+C                    : quit
 """
@@ -43,7 +42,6 @@ from pyOpenHaptics.hd_callback import hd_callback
 from pyOpenHaptics.hd_device import HapticDevice
 
 from pynput import keyboard
-import imageio
 
 
 # ─────────────────────────────────────────────────────────────
@@ -66,7 +64,7 @@ TOUCH_CENTER = np.array([
 # Robot workspace — center and half-range (m)
 # Auto-updated at startup to match actual reset position
 ROBOT_CENTER     = np.array([-0.087,  0.001,  1.022])  # from axis test reset pos
-ROBOT_HALF_RANGE = np.array([ 0.45,   0.45,   0.4 ])   # position scaling
+ROBOT_HALF_RANGE = np.array([ 0.45,   0.45,   0.4 ]) # position scaling
 
 # Relative mode
 RELATIVE_SPEED = 0.002     # m per mm displacement per step — feels responsive
@@ -91,7 +89,7 @@ FORCE_ALPHA   = 1.0        # force low-pass filter (1.0 = no smoothing, 0.0 = ma
 
 # Tuning parameters for mj_contact Force Feedback — adjust for desired feel - FORCE_MODE = "mj_contact" / default
 FORCE_SCALE   = 0.01      # scale raw MuJoCo forces for Touch device (tune for desired feel)
-FORCE_DAMP    = 0.0        # damping — only applied when in contact, only resists penetration
+FORCE_DAMP    = 0.0         # damping — only applied when in contact
 
 # Tuning parameters for penetration Force Feedback mode (OpenHaptics spring-damper) - FORCE_MODE = "penetration"
 STIFFNESS     = 150.0      # N/m — start low, increase if surface feels too soft
@@ -106,13 +104,7 @@ FINGER_GEOMS = {
     'gripper0_right_hand_collision',
 }
 
-SIM_HZ = 100
-
-# Video recording
-RECORD_VIDEO = False          # set True to start recording immediately, or toggle with V key
-VIDEO_FPS    = SIM_HZ
-VIDEO_PATH   = "../videos/haptic_sim.mp4"
-VIDEO_SIZE = (720, 1280)   # camera resolution
+SIM_HZ = 50
 
 
 # ─────────────────────────────────────────────────────────────
@@ -121,16 +113,15 @@ VIDEO_SIZE = (720, 1280)   # camera resolution
 
 @dataclass
 class SharedState:
-    stylus_pos_mm:          np.ndarray = field(default_factory=lambda: np.zeros(3))
-    stylus_vel_mm_s:        np.ndarray = field(default_factory=lambda: np.zeros(3))
-    button1_pressed:        bool = False
-    contact_force_N:        np.ndarray = field(default_factory=lambda: np.zeros(3))
-    gripper_closed:         bool = False
-    last_button1:           bool = False
-    running:                bool = True
-    reset_requested:        bool = False
+    stylus_pos_mm:   np.ndarray = field(default_factory=lambda: np.zeros(3))
+    stylus_vel_mm_s: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    button1_pressed: bool = False
+    contact_force_N: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    gripper_closed:  bool = False
+    last_button1:    bool = False
+    running:         bool = True
+    reset_requested: bool = False
     force_feedback_enabled: bool = FORCE_FEEDBACK_ENABLED
-    record_video:           bool = RECORD_VIDEO
 
 shared = SharedState()
 lock   = threading.Lock()
@@ -149,12 +140,7 @@ def on_key_press(key):
             with lock:
                 shared.force_feedback_enabled = not shared.force_feedback_enabled
                 new_state = shared.force_feedback_enabled
-            print(f"  [Z] Force feedback: {'ENABLED' if new_state else 'DISABLED'}")
-        elif hasattr(key, 'char') and key.char == 'v':
-            with lock:
-                shared.record_video = not shared.record_video
-                new_state = shared.record_video
-            print(f"  [V] Video recording: {'STARTED' if new_state else 'STOPPED'}")
+            print(f"  [Z] Force feedback set to {new_state}")
     except AttributeError:
         pass
 
@@ -195,15 +181,9 @@ def haptic_callback():
         shared.button1_pressed    = button1
         force_cmd = shared.contact_force_N.copy() if shared.force_feedback_enabled else np.zeros(3)
 
-    # Velocity damping — only applied when in contact, only resists penetration direction
-    in_contact = np.linalg.norm(force_cmd) > 1e-4
-    if in_contact and FORCE_DAMP > 0:
-        force_dir        = force_cmd / (np.linalg.norm(force_cmd) + 1e-8)
-        vel_into_surface = -np.dot(vel / 1000.0, force_dir)   # positive = moving into surface
-        damping          = FORCE_DAMP * max(vel_into_surface, 0.0) * force_dir
-    else:
-        damping = np.zeros(3)
-
+    # Velocity damping — only applied when in contact, not in free space
+    in_contact  = np.linalg.norm(force_cmd) > 1e-4
+    damping     = -FORCE_DAMP * vel / 1000.0 if in_contact else np.zeros(3)
     total_force = np.clip(force_cmd + damping, -MAX_FORCE_N, MAX_FORCE_N)
 
     hd.set_force(list(total_force))
@@ -232,6 +212,13 @@ def touch_to_world(pos_mm: np.ndarray) -> np.ndarray:
 
 def compute_target_absolute(stylus_pos_mm: np.ndarray) -> np.ndarray:
     """Map full Touch workspace to robot workspace."""
+    touch_range = np.array([
+        TOUCH_X_RANGE[1] - TOUCH_X_RANGE[0],
+        TOUCH_Z_RANGE[1] - TOUCH_Z_RANGE[0],   # Z range for Y axis
+        TOUCH_Y_RANGE[1] - TOUCH_Y_RANGE[0],   # Y range for Z axis
+    ])
+    touch_min = np.array([TOUCH_X_RANGE[0], TOUCH_Z_RANGE[0], TOUCH_Y_RANGE[0]])
+
     world = touch_to_world(stylus_pos_mm)
     world_range = np.array([
         TOUCH_X_RANGE[1] - TOUCH_X_RANGE[0],
@@ -254,12 +241,14 @@ def compute_target_relative(stylus_pos_mm: np.ndarray,
         if abs(displacement[i]) < DEADZONE_MM:
             displacement[i] = 0.0
 
+    # Clamp max displacement per axis to prevent large jumps
     displacement = np.clip(displacement, -MAX_DISP_MM, MAX_DISP_MM)
 
+    # Axis mapping — matches touch_to_world
     delta = np.array([
-         displacement[2],   # Touch Z → World X
-         displacement[0],   # Touch X → World Y
-         displacement[1],   # Touch Y → World Z
+         displacement[2],   # Touch Z → World X  (toward camera)
+         displacement[0],   # Touch X → World Y  (right on screen)
+         displacement[1],   # Touch Y → World Z  (up)
     ]) * RELATIVE_SPEED
 
     return np.clip(
@@ -278,17 +267,26 @@ _filtered_force = np.zeros(3)
 # OBJECT_BODY_NAME — auto-detected at startup, set manually to None initially:
 OBJECT_BODY_NAME = None   # None = auto-detect at startup
 
-
 def _remap_to_touch(world_force):
     fx, fy, fz = world_force
     return np.array([fy, fz, fx])
-    # Touch X = World Y
-    # Touch Y = World Z
-    # Touch Z = World X
+    # Touch X = World Y 
+    # Touch Y = World Z 
+    # Touch Z = World X 
+# def _remap_to_touch(world_force: np.ndarray) -> np.ndarray:
+#     """Remap MuJoCo world frame → Touch device frame (inverse of position mapping)."""
+#     fx, fy, fz = world_force
+#     return np.array([
+#          fx,   # MuJoCo X → Touch X
+#          fz,   # MuJoCo Z → Touch Y
+#         -fy,   # MuJoCo Y → Touch -Z
+#     ])
 
 
 def get_contact_force_mj(env) -> np.ndarray:
-    """mj_contact mode: reads mj_contactForce on object geom contacts."""
+    """
+    mj_contact mode: reads mj_contactForce on object geom contacts.
+    """
     global _filtered_force
     sim = env.sim
     net_force = np.zeros(3)
@@ -304,9 +302,10 @@ def get_contact_force_mj(env) -> np.ndarray:
         obj_geom_ids = set()
 
     if not obj_geom_ids or sim.data.ncon == 0:
-        _filtered_force[:] = 0.0
+        _filtered_force *= (1 - FORCE_ALPHA)
         return _filtered_force.copy()
 
+    # Get table geom IDs to exclude gravity/resting contacts
     table_geom_ids = set()
     try:
         table_body_id = sim.model.body_name2id("table")
@@ -322,6 +321,8 @@ def get_contact_force_mj(env) -> np.ndarray:
         g1, g2 = c.geom1, c.geom2
         if g1 not in obj_geom_ids and g2 not in obj_geom_ids:
             continue
+
+        # Skip table contacts — just gravity, not interesting for haptics
         other_geom = g2 if g1 in obj_geom_ids else g1
         if other_geom in table_geom_ids:
             continue
@@ -329,8 +330,12 @@ def get_contact_force_mj(env) -> np.ndarray:
         mujoco.mj_contactForce(sim.model._model, sim.data._data, i, force_buf)
         contact_frame = c.frame.reshape(3, 3)
         f_world = contact_frame.T @ force_buf[:3]
+
+        # mj_contactForce gives force ON geom1
+        # if object is geom2, flip to get force ON object
         if g2 in obj_geom_ids:
             f_world = -f_world
+
         net_force += f_world
 
     touch_force = _remap_to_touch(net_force)
@@ -339,12 +344,19 @@ def get_contact_force_mj(env) -> np.ndarray:
 
 
 def get_contact_force_penetration(env) -> np.ndarray:
-    """Penetration mode: spring-damper using EEF velocity from sim."""
+    """
+    Penetration mode: spring-damper from contact.dist on object contacts.
+    Uses EEF velocity from sim (m/s, world frame) for damping, more accurate
+    than stylus velocity which is in a different space and lags behind sim motion.
+    """
     global _filtered_force
     sim = env.sim
     net_force = np.zeros(3)
 
-    eef_vel = sim.data.body_xvelp[sim.model.body_name2id("gripper0_right_hand")]
+    # Use EEF velocity from sim (m/s, world frame) — more accurate than stylus velocity
+    eef_vel = sim.data.body_xvelp[
+        sim.model.body_name2id("gripper0_right_hand")
+    ]
 
     try:
         body_id = sim.model.body_name2id(OBJECT_BODY_NAME)
@@ -356,9 +368,10 @@ def get_contact_force_penetration(env) -> np.ndarray:
         cube_geom_ids = set()
 
     if not cube_geom_ids or sim.data.ncon == 0:
-        _filtered_force[:] = 0.0
+        _filtered_force *= (1 - FORCE_ALPHA)
         return _filtered_force.copy()
 
+    # Exclude table contacts — resting gravity force, not haptic feedback
     table_geom_ids = set()
     try:
         table_body_id = sim.model.body_name2id("table")
@@ -374,8 +387,10 @@ def get_contact_force_penetration(env) -> np.ndarray:
     for i in range(sim.data.ncon):
         c = sim.data.contact[i]
         g1, g2 = c.geom1, c.geom2
+
         if g1 not in cube_geom_ids and g2 not in cube_geom_ids:
             continue
+
         other_geom = g2 if g1 in cube_geom_ids else g1
         if other_geom in table_geom_ids:
             continue
@@ -385,18 +400,21 @@ def get_contact_force_penetration(env) -> np.ndarray:
             continue
 
         has_contact = True
+
+        # Normal points from geom1 → geom2
+        # If cube is geom1, normal points INTO cube → flip to get pushback direction
         normal = c.frame[:3].copy()
         if g1 in cube_geom_ids:
             normal = -normal
 
         f_stiffness = STIFFNESS * depth * normal
-        vel_along_normal = np.dot(eef_vel, normal)
+        vel_along_normal = np.dot(eef_vel, normal)   # EEF vel, already in m/s
         f_damping = -DAMPING * vel_along_normal * normal
         f_contact = np.clip(f_stiffness + f_damping, -MAX_FORCE_N, MAX_FORCE_N)
         net_force += f_contact
 
     if not has_contact:
-        _filtered_force[:] = 0.0
+        _filtered_force *= (1 - FORCE_ALPHA)
         return _filtered_force.copy()
 
     touch_force = _remap_to_touch(net_force)
@@ -405,7 +423,11 @@ def get_contact_force_penetration(env) -> np.ndarray:
 
 
 def get_contact_force_gripper_mj(env) -> np.ndarray:
-    """Render forces on gripper finger geoms directly."""
+    """
+    Render forces on gripper finger geoms directly.
+    Sums mj_contactForce on all contacts involving finger geoms.
+    Negates result (Newton's 3rd law: we want force ON gripper, not FROM gripper).
+    """
     global _filtered_force
     sim = env.sim
     net_force = np.zeros(3)
@@ -419,7 +441,7 @@ def get_contact_force_gripper_mj(env) -> np.ndarray:
             pass
 
     if not finger_ids or sim.data.ncon == 0:
-        _filtered_force[:] = 0.0
+        _filtered_force *= (1 - FORCE_ALPHA)
         return _filtered_force.copy()
 
     has_contact = False
@@ -439,7 +461,7 @@ def get_contact_force_gripper_mj(env) -> np.ndarray:
         net_force += f_world
 
     if not has_contact:
-        _filtered_force[:] = 0.0
+        _filtered_force *= (1 - FORCE_ALPHA)
         return _filtered_force.copy()
 
     touch_force = -_remap_to_touch(net_force)  # negate: Newton's 3rd law
@@ -448,7 +470,11 @@ def get_contact_force_gripper_mj(env) -> np.ndarray:
 
 
 def get_contact_force(env, stylus_vel_mm_s: np.ndarray, gripper_closed: bool = False) -> np.ndarray:
-    """Auto-switch force body based on FORCE_BODY config and gripper state."""
+    """
+    Auto-switch force body based on gripper state:
+      - Gripper open   : feel gripper finger forces directly
+      - Gripper closed : feel object forces (cylinder hitting table/hole)
+    """
     if FORCE_BODY == "gripper":
         return get_contact_force_gripper_mj(env)
     elif FORCE_BODY == "object":
@@ -456,14 +482,17 @@ def get_contact_force(env, stylus_vel_mm_s: np.ndarray, gripper_closed: bool = F
             return get_contact_force_penetration(env)
         else:
             return get_contact_force_mj(env)
-    else:  # "auto"
+    else:  # "auto" — switch based on gripper state
         if gripper_closed:
+            # Holding object (feel what object feels)
             if FORCE_MODE == "penetration":
                 return get_contact_force_penetration(env)
             else:
                 return get_contact_force_mj(env)
         else:
+            # Free moving (feel what gripper feels)
             return get_contact_force_gripper_mj(env)
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -472,8 +501,6 @@ def get_contact_force(env, stylus_vel_mm_s: np.ndarray, gripper_closed: bool = F
 
 if __name__ == "__main__":
     import json
-    import os
-    os.makedirs("../videos", exist_ok=True)
     from round_nut_only_env import RoundNutOnlyEnv
 
     print("=" * 55)
@@ -496,27 +523,14 @@ if __name__ == "__main__":
         robots="Panda",
         controller_configs=ctrl_config,
         has_renderer=True,
-        has_offscreen_renderer=True,    # required for video capture
-        use_camera_obs=True,            # required for video capture
+        has_offscreen_renderer=False,
+        use_camera_obs=False,
         render_camera="agentview",
-        camera_names="agentview",
-        camera_heights=VIDEO_SIZE[0],
-        camera_widths=VIDEO_SIZE[1],
         control_freq=SIM_HZ,
         horizon=100000,
     )
     env.robots[0].init_qpos = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
     obs = env.reset()
-
-    # ── Patch solref on table and gripper geoms for inelastic contacts (no recoil) ──
-    for i in range(env.sim.model.ngeom):
-        name = env.sim.model.geom_id2name(i)
-        if 'table' in name.lower():
-            env.sim.model.geom_solref[i] = [0.004, 2.0]
-            print(f"  Patched solref on {name}")
-        elif any(g in name for g in ['finger', 'hand_collision']):
-            env.sim.model.geom_solref[i] = [0.01, 2.0]
-            print(f"  Patched solref on {name}")
 
     # ── Auto-detect object body name ──
     SKIP_KEYWORDS = ['robot', 'gripper', 'table', 'floor', 'world', 'peg',
@@ -534,7 +548,6 @@ if __name__ == "__main__":
         if OBJECT_BODY_NAME is None:
             print("  WARNING: could not auto-detect object body — forces disabled")
             OBJECT_BODY_NAME = ""
-
     for _ in range(50):
         action = np.zeros(env.action_dim)
         action[-1] = 1.0
@@ -544,14 +557,16 @@ if __name__ == "__main__":
     print(f"  EEF start    : {eef_start.round(3)}")
     print("  Environment ready.")
 
+    # Update robot center to match actual reset position
     ROBOT_CENTER[:] = eef_start
 
     # ── Init Touch device AFTER arm is positioned ──
     print("\n[2/2] Initializing Touch device...")
     device = HapticDevice(callback=haptic_callback, scheduler_type="async")
     hd.enable_force()
-    time.sleep(0.5)
+    time.sleep(0.5)  # let haptic callback populate position
 
+    # Record stylus home position — relative mode moves from HERE not from TOUCH_CENTER
     with lock:
         stylus_home = shared.stylus_pos_mm.copy()
     print(f"  Stylus home  : {stylus_home.round(1)} mm")
@@ -560,19 +575,13 @@ if __name__ == "__main__":
     print(f"\nControls:")
     print(f"  Move stylus  → robot end effector  [{MAPPING_MODE} mode]")
     print(f"  Button 1     → toggle gripper")
-    print(f"  Z            → toggle force feedback")
-    print(f"  V            → toggle video recording")
+    print(f"  A           → toggle force feedback")
     print(f"  SPACEBAR     → reset simulation")
     print(f"  Ctrl+C       → quit\n")
 
     # ── Start keyboard listener ──
     listener = keyboard.Listener(on_press=on_key_press)
     listener.start()
-
-    # ── Video writer state ──
-    video_writer     = None
-    video_recording  = False
-    video_file_index = 0
 
     sim_step = 0
     with lock:
@@ -604,24 +613,10 @@ if __name__ == "__main__":
 
             # ── Read shared state ──
             with lock:
-                stylus_pos      = shared.stylus_pos_mm.copy()
-                button_now      = shared.button1_pressed
-                gripper_closed  = shared.gripper_closed
-                last_button     = shared.last_button1
-                record_now      = shared.record_video
-
-            # ── Handle video recording toggle ──
-            if record_now and not video_recording:
-                video_file_index += 1
-                path = VIDEO_PATH.replace(".mp4", f"_{video_file_index}.mp4")
-                video_writer    = imageio.get_writer(path, fps=VIDEO_FPS)
-                video_recording = True
-                print(f"  Recording started → {path}")
-            elif not record_now and video_recording:
-                video_writer.close()
-                video_writer    = None
-                video_recording = False
-                print(f"  Recording saved → {path}")
+                stylus_pos     = shared.stylus_pos_mm.copy()
+                button_now     = shared.button1_pressed
+                gripper_closed = shared.gripper_closed
+                last_button    = shared.last_button1
 
             # ── Gripper toggle on button rising edge ──
             if button_now and not last_button:
@@ -636,9 +631,8 @@ if __name__ == "__main__":
             else:
                 target = compute_target_relative(stylus_pos, eef_pos, stylus_home)
 
-            # ── Build action vector ──
+            # ── Build action vector [dx dy dz drx dry drz gripper] ──
             pos_error_world   = target - eef_pos
-            # print(f"  Error XYZ: {pos_error_world.round(3)} m")
             pos_error_clipped = np.clip(pos_error_world * ACTION_GAIN, -1.0, 1.0)
 
             action      = np.zeros(env.action_dim)
@@ -649,23 +643,19 @@ if __name__ == "__main__":
             obs, _, done, _ = env.step(action)
             env.render()
 
-            # ── Capture video frame ──
-            if video_recording and video_writer is not None:
-                frame = obs["agentview_image"][::-1]   # flip vertically
-                video_writer.append_data(frame)
-
             # ── Extract and send contact forces ──
             try:
                 with lock:
                     force_enabled = shared.force_feedback_enabled
-                    stylus_vel    = shared.stylus_vel_mm_s.copy()
+                    stylus_vel = shared.stylus_vel_mm_s.copy()
                 if force_enabled:
                     force = get_contact_force(env, stylus_vel, gripper_closed)
                     if FORCE_MODE == "mj_contact":
                         scaled_force = np.clip(force * FORCE_SCALE, -MAX_FORCE_N, MAX_FORCE_N)
                     else:
                         scaled_force = np.clip(force, -MAX_FORCE_N, MAX_FORCE_N)
-                    raw_force_mag        = np.linalg.norm(force)
+                    raw_force_mag = np.linalg.norm(force)
+                    # Estimate total force sent to device — damping only when in contact
                     in_contact_estimate  = np.linalg.norm(scaled_force) > 1e-4
                     damping_estimate     = -FORCE_DAMP * stylus_vel / 1000.0 if in_contact_estimate else np.zeros(3)
                     total_force_estimate = np.clip(scaled_force + damping_estimate, -MAX_FORCE_N, MAX_FORCE_N)
@@ -695,15 +685,15 @@ if __name__ == "__main__":
                 print(f"  target XYZ={target.round(3)} m")
                 print(f"  action XYZ={action[:3].round(3)}  dominant={dom}")
                 print(f"  ncon={env.sim.data.ncon} | raw={raw_force_mag:.3f} | scale={FORCE_SCALE} | scaled={scaled_force.round(3)} | damping={damping_estimate.round(3)} | total≈{total_force_estimate.round(3)} N | MAX={MAX_FORCE_N}")
-                if video_recording:
-                    print(f"  [REC] Recording to {path}")
 
+                # Diagnostic: print all body names with non-zero cfrc_ext
                 for bid in range(env.sim.model.nbody):
                     f = env.sim.data.cfrc_ext[bid, :3]
                     if np.linalg.norm(f) > 0.1:
                         name = env.sim.model.body_id2name(bid)
                         print(f"    cfrc_ext[{name}] = {f.round(3)}")
 
+                # Diagnostic: print cube contact forces directly
                 try:
                     body_id = env.sim.model.body_name2id(OBJECT_BODY_NAME)
                     cube_geom_ids = {
@@ -744,20 +734,10 @@ if __name__ == "__main__":
             elapsed = time.perf_counter() - t0
             time.sleep(max(0.0, 1.0 / SIM_HZ - elapsed))
 
-            # ── Debug loop timing ──
-            if sim_step % 100 == 0:
-                hz = 1.0 / elapsed if elapsed > 1e-6 else 0.0
-                print(f"loop dt = {elapsed*1000:.2f} ms | hz = {hz:.1f}")
-
-            time.sleep(max(0.0, 1.0 / SIM_HZ - elapsed))
-
     except KeyboardInterrupt:
         print("\nShutting down...")
 
     finally:
-        if video_writer is not None:
-            video_writer.close()
-            print(f"  Video saved → {path}")
         listener.stop()
         shared.running = False
         with lock:

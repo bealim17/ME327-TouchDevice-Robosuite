@@ -75,7 +75,7 @@ MAX_DISP_MM    = 80.0      # clamp displacement per axis (mm)
 
 # Action
 # BASIC controller OSC_POSE: output_max=0.05m/step, input scaled [-1,1]
-# So action=1.0 → 0.05m movement per step at SIM_HZ=20 → 1m/s max
+# See SIM_HZ & controller max stepsize for expected max speed e.g. action=1.0 -> 0.05m movement per step at SIM_HZ=20 -> 1m/s max
 ACTION_GAIN = 5.0          # gentle — controller has ramp_ratio=0.2 built in
 
 # Force feedback
@@ -86,7 +86,7 @@ FORCE_BODY    = "gripper"        # "gripper": always gripper forces
                                # "auto": gripper when open, object when closed
 
 # General Tuning parameters for Force Feedback
-MAX_FORCE_N   = 1.5        # Touch device force clip (N)
+MAX_FORCE_N   = 2.0        # Touch device force clip (N)
 FORCE_ALPHA   = 1.0        # force low-pass filter (1.0 = no smoothing, 0.0 = maximum smoothing)
 
 # Tuning parameters for mj_contact Force Feedback — adjust for desired feel - FORCE_MODE = "mj_contact" / default
@@ -508,15 +508,18 @@ if __name__ == "__main__":
     env.robots[0].init_qpos = np.array([0, -0.785, 0, -2.356, 0, 1.571, 0.785])
     obs = env.reset()
 
-    # ── Patch solref on table and gripper geoms for inelastic contacts (no recoil) ──
-    for i in range(env.sim.model.ngeom):
-        name = env.sim.model.geom_id2name(i)
-        if 'table' in name.lower():
-            env.sim.model.geom_solref[i] = [0.004, 2.0]
-            print(f"  Patched solref on {name}")
-        elif any(g in name for g in ['finger', 'hand_collision']):
-            env.sim.model.geom_solref[i] = [0.01, 2.0]
-            print(f"  Patched solref on {name}")
+    def apply_solref_patches():
+        # solref = [timeconst, dampratio]
+        #   timeconst : smaller -> stiffer surface (0.001=hard metal, 0.02=soft)
+        #   dampratio : 1.0=critically damped (no bounce), >1.0=overdamped
+        for i in range(env.sim.model.ngeom):
+            name = env.sim.model.geom_id2name(i)
+            if 'table' in name.lower():
+                env.sim.model.geom_solref[i] = [0.02, 2.0]
+            elif any(g in name for g in ['finger', 'hand_collision']):
+                env.sim.model.geom_solref[i] = [0.01, 2.0]
+
+    apply_solref_patches()
 
     # ── Auto-detect object body name ──
     SKIP_KEYWORDS = ['robot', 'gripper', 'table', 'floor', 'world', 'peg',
@@ -640,6 +643,8 @@ if __name__ == "__main__":
             pos_error_world   = target - eef_pos
             # print(f"  Error XYZ: {pos_error_world.round(3)} m")
             pos_error_clipped = np.clip(pos_error_world * ACTION_GAIN, -1.0, 1.0)
+            
+            
 
             action      = np.zeros(env.action_dim)
             action[:3]  = pos_error_clipped
@@ -746,10 +751,13 @@ if __name__ == "__main__":
 
             # ── Debug loop timing ──
             if sim_step % 100 == 0:
-                hz = 1.0 / elapsed if elapsed > 1e-6 else 0.0
-                print(f"loop dt = {elapsed*1000:.2f} ms | hz = {hz:.1f}")
+                total = time.perf_counter() - t0   # includes sleep
+                hz = 1.0 / total if total > 1e-6 else 0.0
+                print(f"loop dt = {total*1000:.2f} ms | hz = {hz:.1f}")
 
-            time.sleep(max(0.0, 1.0 / SIM_HZ - elapsed))
+            # # # print statemente for vel
+            # eef_vel = env.sim.data.get_body_xvelp("robot0_right_hand")
+            # print("eef vel", np.linalg.norm(eef_vel))
 
     except KeyboardInterrupt:
         print("\nShutting down...")

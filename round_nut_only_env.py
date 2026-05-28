@@ -88,7 +88,7 @@ class RoundNutOnlyEnv(ManipulationEnv):
         self.cylinder = CylinderObject(
             name="InsertCylinder",
             size=(0.0275, 0.0325),
-            friction=(3.4, 0.3, 0.01), # sliding, torsional, rolling
+            friction=(3.4, 0.3, 0.01), # sliding, torsional, rolling #TUNED
             # rgba=[0.2, 0.7, 1.0, 1.0], # rich blue color to visually distinguish the cylinder from the round nut
             rgba=[0.75, 0.75, 0.75, 1.0], # light grey color to match the round nut, so that it is harder to visually distinguish the two objects and you rely on haptics more
         )

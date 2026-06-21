@@ -66,7 +66,7 @@ TOUCH_CENTER = np.array([
 # Robot workspace — center and half-range (m)
 # Auto-updated at startup to match actual reset position
 ROBOT_CENTER     = np.array([-0.087,  0.001,  1.022])  # from axis test reset pos
-ROBOT_HALF_RANGE = np.array([ 0.45,   0.45,   0.4 ])   # position scaling
+ROBOT_HALF_RANGE = np.array([ 0.45,   0.45,   0.45 ])   # position scaling
 
 # Relative mode
 RELATIVE_SPEED = 0.002     # m per mm displacement per step — feels responsive
@@ -113,6 +113,10 @@ RECORD_VIDEO = False          # set True to start recording immediately, or togg
 VIDEO_FPS    = SIM_HZ
 VIDEO_PATH   = "../videos/haptic_sim.mp4"
 VIDEO_SIZE = (720, 1280)   # camera resolution
+
+# Loop timing log — written to CSV on exit for latency analysis
+LOG_TIMING      = True               # set False to disable
+TIMING_LOG_PATH = "../logs/loop_timing.csv"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -498,8 +502,8 @@ if __name__ == "__main__":
         has_renderer=True,
         has_offscreen_renderer=True,    # required for video capture
         use_camera_obs=True,            # required for video capture
-        render_camera="agentview",
-        camera_names="agentview",
+        render_camera="robot0_eye_in_hand", # "agentview": front view, mirrored / "robot0_eye_in_hand": egoview, opposite dir
+        camera_names="robot0_eye_in_hand", # "agentview": front view, mirrored / "robot0_eye_in_hand": egoview, opposite dir
         camera_heights=VIDEO_SIZE[0],
         camera_widths=VIDEO_SIZE[1],
         control_freq=SIM_HZ,
@@ -581,6 +585,10 @@ if __name__ == "__main__":
     with lock:
         shared.gripper_closed = False
 
+    # ── Timing log state ──
+    _timing_log  = []       # list of dicts, flushed to CSV on exit
+    _t_last_loop = None     # wall-clock time at loop start of previous iteration
+
     try:
         while shared.running:
             # ── Handle reset request ──
@@ -604,6 +612,7 @@ if __name__ == "__main__":
                 continue
 
             t0 = time.perf_counter()
+            _t_wall_loop = t0
 
             # ── Read shared state ──
             with lock:
@@ -651,8 +660,11 @@ if __name__ == "__main__":
             action[-1]  = -1.0 if gripper_closed else 1.0
 
             # ── Step simulation ──
+            _t_step_start   = time.perf_counter()
             obs, _, done, _ = env.step(action)
+            _t_after_step   = time.perf_counter()
             env.render()
+            _t_after_render = time.perf_counter()
 
             # ── Capture video frame ──
             if video_recording and video_writer is not None:
@@ -748,10 +760,31 @@ if __name__ == "__main__":
 
             elapsed = time.perf_counter() - t0
             time.sleep(max(0.0, 1.0 / SIM_HZ - elapsed))
+            _t_after_sleep = time.perf_counter()
+
+            # ── Log timing row ──
+            if LOG_TIMING:
+                _inter_dt = (_t_wall_loop - _t_last_loop) * 1000.0 if _t_last_loop is not None else float("nan")
+                _timing_log.append({
+                    "sim_step":            sim_step,
+                    "wall_time_s":         _t_wall_loop,
+                    "inter_loop_dt_ms":    _inter_dt,
+                    "step_ms":             (_t_after_step   - _t_step_start)  * 1000.0,
+                    "render_ms":           (_t_after_render - _t_after_step)  * 1000.0,
+                    "total_active_ms":     elapsed * 1000.0,
+                    "full_loop_ms":        (_t_after_sleep  - _t_wall_loop)   * 1000.0,
+                    "in_contact":          int(any(
+                        (env.sim.model.geom_id2name(env.sim.data.contact[_ci].geom1) in FINGER_GEOMS or
+                         env.sim.model.geom_id2name(env.sim.data.contact[_ci].geom2) in FINGER_GEOMS)
+                        for _ci in range(env.sim.data.ncon)
+                    )),
+                    "force_mag_N":         float(np.linalg.norm(scaled_force)),
+                })
+                _t_last_loop = _t_wall_loop
 
             # ── Debug loop timing ──
             if sim_step % 100 == 0:
-                total = time.perf_counter() - t0   # includes sleep
+                total = _t_after_sleep - _t_wall_loop
                 hz = 1.0 / total if total > 1e-6 else 0.0
                 print(f"loop dt = {total*1000:.2f} ms | hz = {hz:.1f}")
 
@@ -763,6 +796,11 @@ if __name__ == "__main__":
         print("\nShutting down...")
 
     finally:
+        if LOG_TIMING and _timing_log:
+            import pandas as _pd, os as _os
+            _os.makedirs(_os.path.dirname(TIMING_LOG_PATH), exist_ok=True)
+            _pd.DataFrame(_timing_log).to_csv(TIMING_LOG_PATH, index=False)
+            print(f"  Timing log → {TIMING_LOG_PATH}  ({len(_timing_log)} rows)")
         if video_writer is not None:
             video_writer.close()
             print(f"  Video saved → {path}")

@@ -9,6 +9,8 @@ pyOpenHaptics==1.0.1
 pynput==1.8.2
 imageio==2.37.3
 imageio[ffmpeg]        # MP4 video recording
+pandas==3.0.3
+matplotlib==3.10.9
 
 # numpy 2.x is required but robosuite's mink dependency declares numpy<2.0.0.
 # Install this AFTER running pip install -r requirements.txt (see README step 3).

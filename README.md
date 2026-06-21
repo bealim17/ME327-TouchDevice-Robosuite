@@ -74,6 +74,70 @@ python haptic_calibration_demo.py
 ```
 Use this first to verify axis mapping and force directions without loading the full robot environment.
 
+### Controller Characterization (no haptic device required)
+```bash
+# Run all experiments + analysis in one shot
+python experiments/osc_tests.py
+
+# Run experiments only (skip analysis — set RUN_ANALYSIS = False in osc_tests.py)
+python experiments/osc_tests.py
+
+# Run analysis only on existing CSVs in experiments/data/
+python experiments/analyze_osc_results.py
+```
+
+Results are saved to:
+- `experiments/data/` — raw CSVs per trial + summary tables
+- `experiments/figures/` — all plots
+
+### Haptic Force Rendering Quality (no haptic device required)
+```bash
+python experiments/haptic_simhz_sweep.py
+```
+Scripted table-impact sweep across SIM_HZ = [10, 20, 50, 100]. Reconstructs the 1 kHz zero-order-hold haptic signal from sim data and compares staircase fidelity across rates.
+
+---
+
+## Controller Characterization (`experiments/osc_tests.py`)
+
+Systematic open-loop characterization of the OSC position controller. All tests run scripted trajectories — no Touch device or human input required. See [Section 3.2 of the project wiki](https://charm.stanford.edu/ME327/2026-Group18#toc5) for full methodology and results.
+
+### Experiments
+
+**Step Response** — 15–20 cm step along X, Y, Z at t = 2 s, 10 s trial.
+Extracts rise time, settling time (±2% band), overshoot, and steady-state RMS error per axis.
+Key result: 200–250 ms rise time, ~12% overshoot on X/Y, ~6% on Z (gravity compensation reduces effective inertia).
+
+**Frequency Response & Bandwidth** — Sinusoidal targets at 0.5, 1.0, 2.0, 3.0, 5.0 Hz (5 cm amplitude, Y-axis, 20 s each).
+Computes amplitude gain, phase lag, and RMS tracking error per frequency. Estimates −3 dB bandwidth by interpolation.
+Key result: bandwidth ≈ 1.5 Hz; 90° phase-lag crossover at ~1.5 Hz is the practical haptic stability limit — beyond this, reflected forces invert (assisting insertion, resisting withdrawal).
+
+**Damping Ratio Sweep** — OSC damping ratio ζ ∈ {0.2, 0.5, 1.0, 2.0}, both step and 0.5 Hz sine inputs.
+Step responses are indistinguishable (controller saturates at max effort during transients); sine tracking reveals ζ = 0.2 gives lowest phase lag (150 ms vs 180 ms) and lowest peak error.
+Key result: ζ = 0.2 recommended.
+
+**Simulation Rate Sweep** — SIM_HZ ∈ {10, 20, 50, 100} Hz, 0.5 Hz sine for 20 s.
+Measures RMS position error and zero-order-hold force update latency per rate.
+Key result: 10 → 100 Hz cuts RMS error by 41% (34 mm → 20 mm); diminishing returns above 50 Hz; 100 Hz chosen for 10 ms ZOH latency during impulsive contact.
+
+**Cross-Axis Coupling** — Off-axis displacement during primary-axis step inputs, relative to pre-step baseline.
+Key result: X–Z coupling dominates (33 mm transient X-drift during Z-step). All coupling is transient and decays within 2 s, but the 33 mm peak exceeds typical peg-hole clearance (27.5 mm radius) — slow approach (<0.1 m/s) is required.
+
+### Enabling / Disabling Individual Tests
+
+At the top of `__main__` in `experiments/osc_tests.py`:
+
+```python
+RUN_STEP_RESPONSE   = True
+RUN_FREQUENCY_SWEEP = True
+RUN_DAMPING_SWEEP   = True
+RUN_KP_SWEEP        = True
+RUN_SIMHZ_SWEEP     = True
+RUN_ANALYSIS        = True   # set False to skip post-processing
+```
+
+Set any flag to `False` to skip that experiment or the analysis pass.
+
 ---
 
 ## Controls
